@@ -2,60 +2,94 @@
 
 module tb_adc3664_spi_slave;
 
-    reg SCLK    = 0;
-    reg SEN     = 1;
-    reg Reset   = 1;
-    reg SDIO_tb = 1'bz;
+    reg SCLK     = 0;
+    reg SEN      = 1;
+    reg Reset    = 1;
+    reg SDIO_drv = 1'b0;  // Internal driver
+    reg drive_en = 1'b1;  // Drive enable (1 = drive, 0 = release)
 
-    wire rw_flag;
-    wire [11:0] address;
-    wire [7:0]  data_out;
+    wire SDIO = drive_en ? SDIO_drv : 1'bz;  // Tri-state SDIO
+
+    wire [7:0] data_out;
     wire data_ready;
+    reg clk_start = 0;
 
-    reg [23:0] frame = 24'b0;
-  reg clk_start = 0;
-    // DUT instance
+    // DUT instance with only 6 ports
     adc3664_spi_slave dut (
         .SCLK(SCLK),
         .SEN(SEN),
         .Reset(Reset),
-        .SDIO(SDIO_tb),
-        .rw_flag(rw_flag),
-        .address(address),
+        .SDIO(SDIO),
         .data_out(data_out),
         .data_ready(data_ready)
     );
 
-    integer i;
-    
     // Clock generation
-    always #5 if(clk_start == 1) SCLK = ~SCLK;// 100 MHz clock
+    always #10 if(clk_start == 1) SCLK = ~SCLK;
+
+    integer i;
+    reg [23:0] write_frame;
+    reg [23:0] read_frame;
 
     initial begin
-        // Frame = 1(read) + 3b000 + address(12b) + data(8b)
-        frame = 24'b1_000_101010101010_11001100;
-
-        // Apply Reset
+      
+        // WRITE FRAME: write 0xA5 to address 0x012
+        write_frame = {1'b0, 3'b010, 12'h015, 8'hA5};
+        
+        // Reset pulse
         #5 Reset = 1;
         #5 Reset = 0;
 
-        // Start Transmission
         #5 SEN = 0;
+  	      
+  	     #5;
   	     clk_start = 1;
-        // Transmit 24 bits, one per posedge
+        for (i = 0; i < 24; i = i+1) begin  
+            SDIO_drv = write_frame[23 - i];
+            drive_en = 1;
+            
+            @(negedge SCLK);
+        end
+        
+       // #10 SEN = 1;
+       
+        drive_en = 0;
+        SDIO_drv = 1'bz;
+        @(negedge SCLK);
+         clk_start = 0;
+         SCLK = 0;
+         #5 SEN = 1;
+         //Reset = 1;
+         
+         
+        #25;
+
+        // READ FRAME: read from address 0x012
+       read_frame = {1'b1, 3'b000, 12'h015, 8'h00};
+        
+       #5 Reset = 0;
+        #5 SEN = 0;
+        clk_start = 1;
+	       
         for (i = 0; i < 24; i = i + 1) begin
-             // Place data before posedge
-            SDIO_tb = frame[23 - i];
+            
+            if (i <= 15) begin
+                SDIO_drv = read_frame[23 - i];
+                drive_en = 1;  // drive only address/control part
+            end else begin
+                drive_en = 0;  // release for data bits
+            end
             @(negedge SCLK);
         end
 
-        // Release Bus
-        @(negedge SCLK);
-        SDIO_tb = 1'bz;
-        SEN = 1;
+        
+        //SEN = 1;
+        //drive_en = 0;
+        //SDIO_drv = 1'bz;
+        //@(negedge SCLK);
+        
 
-        // Wait to observe final outputs
-        #100 $finish;
+        #20 $stop;
     end
 
 endmodule
